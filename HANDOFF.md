@@ -1,0 +1,84 @@
+# Handoff: AI Usage Telemetry — เริ่มงานที่นี่
+
+เอกสารนี้สรุปทุกอย่างที่ตัดสินใจและสร้างไว้แล้ว เพื่อให้ทำงานต่อได้โดยไม่ต้องถามบริบทซ้ำ
+
+## เป้าหมายของระบบ
+
+เก็บข้อมูลการใช้งาน AI CLI (Claude Code, Codex, OpenCode) แยกรายบุคคล — model, token, cost — สำหรับทีม dev 50+ คน ผ่าน hook ของแต่ละเครื่องมือ
+
+## เอกสารสถาปัตยกรรมทั้งหมด (อ่านก่อนแก้โค้ดใดๆ)
+
+อยู่ใน `docs/overview/`:
+- `architecture.md` — ภาพรวมเต็ม, canonical event schema, data flow
+- `adr/ADR-001-architecture-style.md` — modular monolith (ไม่ใช่ microservices)
+- `adr/ADR-002-storage-choice.md` — **Postgres ตัวเดียว** (ไม่ใช่ ClickHouse+Postgres) พร้อม partition + retention ปรับได้
+- `adr/ADR-003-identity-hook-antitamper.md` — local-agent key เป็นแหล่ง identity หลักเสมอ, hook governance ผ่าน package/daemon split, anti-tamper layers
+- `adr/ADR-004-account-classification-policy.md` — company vs personal account classification + retention policy
+- `adr/ADR-005-authentication-rbac.md` — OIDC สำหรับ human, RBAC 4 roles, Postgres RLS
+
+`docs/contracts/` — domain contracts (stack-agnostic API spec):
+- `domain-ai-usage-backend.yaml` — **อ่านไฟล์นี้ก่อนแก้ backend ใดๆ** มี `api_contracts`, `data_ownership`, `sla` ครบ
+- `domain-local-agent.yaml`
+- `domain-ai-usage-dashboard.yaml`
+
+`docs/build/build-order.yaml` — ลำดับการ build: **Tier 1: ai-usage-backend** (ไม่มี dependency) → **Tier 2: local-agent, ai-usage-dashboard** (ขนานกันได้)
+
+## สถานะปัจจุบันของแต่ละส่วน
+
+| ส่วน | Path | สถานะ |
+|---|---|---|
+| `@mycompany/ai-usage-hook` (thin package) | `packages/ai-usage-hook/` | ✅ **Compile ผ่าน + ทดสอบ end-to-end แล้ว** (exit code 0 เสมอ, fallback file ทำงานถูกต้อง, adapter ทำงานถูกต้อง) |
+| `@mycompany/ai-usage-agent` (daemon) | `agents/ai-usage-agent/` | ✅ **Compile ผ่าน + ทดสอบ end-to-end แล้ว** กับ mock backend (JWT signing/verify, hash-chain tamper detection, offline fallback sweep ทดสอบจริงหมดแล้ว) |
+| `ai-usage-backend` (Rust/Axum) | `backend/ai-usage-backend/` | ⚠️ **เขียนโค้ดครบแล้วแต่ยัง compile ไม่สำเร็จ** — sandbox ที่ใช้เขียนโค้ดนี้มีแค่ rustc 1.75 (ผ่าน apt) ซึ่งเก่าเกินกว่าจะ parse บาง transitive dependency ที่ใช้ `edition2024` ได้ ไม่ใช่ปัญหาของโค้ด — เครื่องที่มี Rust toolchain ปกติ (ผ่าน rustup) ไม่ควรเจอปัญหานี้ |
+| Migration SQL | `backend/ai-usage-backend/migrations/` | ✅ **รันกับ Postgres 16 จริงแล้ว ผ่านหมด** รวม RLS policy |
+
+## งานแรกที่ต้องทำ (ลำดับความสำคัญ)
+
+### 1. ทำให้ `ai-usage-backend` compile และรันได้จริง
+
+```bash
+cd backend/ai-usage-backend
+cargo build
+```
+
+ถ้าเจอ compile error ให้แก้ตามปกติ — โครงสร้างเป็น hexagonal (`domain/`, `adapters/`, `infrastructure/`) logic ทุกจุดอ้างอิง ADR ที่เกี่ยวข้องไว้ในคอมเมนต์แล้ว จุดที่ควรเข้าใจก่อนแก้:
+
+- **`src/domain/auth.rs`** — verify self-signed JWT (ES256) จาก local-agent โดย decode payload แบบไม่ verify ก่อนเพื่อรู้ `developer_id` แล้วค่อยไป lookup public key จริงมา verify signature (คอมเมนต์อธิบายเหตุผลไว้ในไฟล์) — **`developer_id` ต้องมาจากผลของ signature verification เท่านั้น ห้าม trust จาก field ใดๆ ที่ client ส่งมาโดยตรง** (ADR-003)
+- **`src/domain/model.rs`** — `classify_account()` / `should_redact()` ใช้ทำ governance classification ตาม ADR-004 — `unknown` treat เป็น `personal` โดย fail-safe
+- **`src/adapters/db/repository.rs`** — `insert_event()` รับ `redact: bool` แล้ว zero-out token/cost/project **ก่อน** เขียนลง DB ไม่ใช่ query แล้วค่อยกรอง (data minimization)
+
+### 2. เขียน integration test สำหรับ `POST /v1/events`
+
+ควรทดสอบ (ทั้งหมด reproduce ได้จาก migration ที่มีอยู่แล้ว):
+- Signature ถูกต้อง + developer ที่ registered แล้ว → 200, บันทึกลง DB ครบ
+- Signature ผิด/หมดอายุ → 401
+- `developer_id` ที่พยายามใส่ในตัว body (ถ้ามี) ต้องถูกเพิกเฉย ใช้ค่าจาก JWT เท่านั้น
+- `account_class = personal` + `personal_account_policy = flag_only` → token/cost/project ต้องเป็น 0/null ใน DB จริง
+- ใช้ `testcontainers` (มีอยู่ใน skill's Cargo.toml convention) แทนการพึ่ง Postgres ที่ติดตั้งไว้ล่วงหน้า
+
+### 3. ต่อ `ai-usage-agent` (daemon) เข้ากับ backend จริง
+
+Daemon ทดสอบผ่านมาแล้วกับ mock backend (ดู `docs/packages/ai-usage-agent-design.md`) — พอ backend จริงรันได้ ให้:
+```bash
+export AI_USAGE_BACKEND_URL=http://<backend-host>/v1/events
+export AI_USAGE_DEV_DEVELOPER_ID=<uuid>   # ใช้ได้ชั่วคราวจนกว่าจะมี SSO integration จริง — ดูข้อ 4
+```
+แล้วรัน `register_developer` binary (มีอยู่แล้วใน `backend/ai-usage-backend/src/bin/register_developer.rs`) เพื่อลงทะเบียน public key ของ daemon ก่อนยิง event จริง
+
+### 4. Implement ส่วนที่เป็น stub ไว้โดยตั้งใจ (org-specific, ทำแทนไม่ได้ในบทสนทนานี้)
+
+- `agents/ai-usage-agent/src/identity/provisioning.ts` → ฟังก์ชัน `registerWithCompanyIdp()` — ต้องเขียน SSO device-code flow จริงกับ IdP ของบริษัท (Okta/Azure AD/Google) ตาม ADR-003
+- Endpoint ฝั่ง backend สำหรับรับ public key registration จากผลของ SSO flow (ตอนนี้มีแค่ CLI helper สำหรับ dev/test)
+- `agents/ai-usage-agent/src/identity/keystore.ts` → `FileKeyStore` เป็น reference implementation เท่านั้น **ต้องเปลี่ยนเป็น OS keychain จริง** (keytar หรือ native binding) ก่อน deploy จริงตาม ADR-003 — เหตุผลอยู่ในคอมเมนต์ของไฟล์
+
+### 5. หลังจากนั้นค่อยทำ Tier 2
+
+`get-usage-summary`, `update-governance-policy`, `get-audit-log` endpoints (spec ครบใน `domain-ai-usage-backend.yaml` แล้ว ยังไม่ implement) แล้วค่อยเริ่ม `ai-usage-dashboard` (Next.js)
+
+## หลักการที่ต้องยึดตลอด (สรุปจาก ADR ทั้งหมด)
+
+1. **Server derive `developer_id` จาก signature เสมอ ไม่เชื่อ field ที่ client ส่งมา**
+2. **Hook/package ห้าม block CLI ของ dev เด็ดขาด** — exit code 0 เสมอ
+3. **ไม่มีทาง anti-tamper ได้ 100% จากฝั่ง client ล้วนๆ** — เป้าหมายคือเพิ่มความยาก + เพิ่มโอกาสตรวจจับ ไม่ใช่ปิดรูรั่วสมบูรณ์ (ยกเว้นจะเพิ่ม LLM gateway หรือ vendor usage API reconciliation ในอนาคต — นอก scope ปัจจุบัน)
+4. **Governance policy เปลี่ยนได้ผ่าน admin panel โดยไม่ต้อง deploy ใหม่** (`raw_retention_days`, `personal_account_policy`, `company_domains`)
+5. **Redact ก่อน persist เสมอ ไม่ใช่ query แล้วค่อยกรอง** (data minimization)

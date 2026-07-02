@@ -1,0 +1,25 @@
+{
+  "name": "@mycompany/ai-usage-agent",
+  "version": "1.0.0",
+  "description": "Long-running local daemon: identity resolution, signing, buffering, and upload for AI usage telemetry. See DESIGN.md.",
+  "publishConfig": {
+    "registry": "https://npm.internal.mycompany.com"
+  },
+  "bin": {
+    "ai-usage-agent": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test dist/**/*.test.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^20.0.0"
+  }
+}
