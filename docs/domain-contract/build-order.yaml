@@ -1,0 +1,45 @@
+schema_version: "1.0"
+project: ai-usage-telemetry
+generated_at: "2026-07-02T00:00:00Z"
+total_domains: 3
+
+tiers:
+  - tier: 1
+    parallel: true
+    domains:
+      - name: ai-usage-backend
+        skill: rust-backend-engineer
+        stack: rust
+        reason: No upstream dependencies — owns all persisted data (ADR-002)
+
+  - tier: 2
+    parallel: true
+    domains:
+      - name: local-agent
+        skill: node-backend-engineer
+        stack: node
+        depends_on: [ai-usage-backend]
+        reason: "Depends on ai-usage-backend's submit-event endpoint. NOTE: node-backend-engineer is not installed in this environment — implement without dedicated skill assistance or add the skill before starting this tier."
+      - name: ai-usage-dashboard
+        skill: frontend-engineer
+        stack: typescript
+        depends_on: [ai-usage-backend]
+        reason: Depends on ai-usage-backend's query and governance endpoints
+
+dependency_graph:
+  - from: local-agent
+    to: ai-usage-backend
+    contract_id: submit-event
+    call_pattern: sync
+  - from: ai-usage-dashboard
+    to: ai-usage-backend
+    contract_id: get-usage-summary
+    call_pattern: sync
+  - from: ai-usage-dashboard
+    to: ai-usage-backend
+    contract_id: update-governance-policy
+    call_pattern: sync
+  - from: ai-usage-dashboard
+    to: ai-usage-backend
+    contract_id: get-audit-log
+    call_pattern: sync

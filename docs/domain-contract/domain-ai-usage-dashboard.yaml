@@ -1,0 +1,65 @@
+# ─────────────────────────────────────────────
+# DOMAIN CONTRACT
+# Schema version: 1.0
+# ─────────────────────────────────────────────
+
+schema_version: "1.0"
+domain: ai-usage-dashboard
+version: 1.0.0
+description: >
+  Web dashboard for developers, managers, and admins to view AI usage,
+  cost, and (for platform_admin) manage Governance policy. Pure consumer
+  of ai-usage-backend's API — owns no server-side data of its own.
+owner_team: platform-devex-team   # placeholder — replace with actual team name
+status: draft
+
+api_contracts: []   # no API exposed to other domains; renders UI and calls ai-usage-backend directly
+
+depends_on:
+  - domain: ai-usage-backend
+    contract_id: get-usage-summary
+    reason: Render usage charts scoped to the logged-in user's role
+    call_pattern: sync
+    circuit_breaker: true
+    fallback: Show cached last-known summary with a staleness indicator
+  - domain: ai-usage-backend
+    contract_id: update-governance-policy
+    reason: Admin settings screen for Governance config
+    call_pattern: sync
+    circuit_breaker: false
+    fallback: "n/a — admin action fails visibly, no automatic retry"
+  - domain: ai-usage-backend
+    contract_id: get-audit-log
+    reason: Compliance view for platform_admin and auditor roles
+    call_pattern: sync
+    circuit_breaker: false
+    fallback: "n/a — read-only view fails visibly"
+
+data_ownership:
+  - entity: DashboardUserPreference
+    description: Saved filters, theme, and layout preferences — client-side only
+    storage: other   # browser local storage, never sent to a server-side DB
+    pii: false
+    retention_policy: "Until the user clears browser data"
+
+sla:
+  latency_p99_ms: 300
+  latency_p50_ms: 100
+  availability_pct: 99.5
+  consistency_model: eventual
+  rpo_minutes: 0
+  rto_minutes: 30
+
+implementation:
+  stack: typescript
+  language_version: "5.5"
+  framework: next.js
+  database:
+    type: other   # no server-side database owned by this domain
+    version: "n/a"
+  message_broker:
+    type: none
+    version: "n/a"
+  skill: frontend-engineer
+  build_priority: 2
+  deploy_target: other   # static/edge deploy (e.g. Vercel-style), not the same k8s cluster as the backend

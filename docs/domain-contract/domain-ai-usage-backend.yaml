@@ -1,0 +1,219 @@
+# ─────────────────────────────────────────────
+# DOMAIN CONTRACT
+# Schema version: 1.0
+# ─────────────────────────────────────────────
+
+schema_version: "1.0"
+domain: ai-usage-backend
+version: 1.0.0
+description: >
+  Modular monolith owning ingestion, identity resolution, governance policy
+  enforcement, storage, and query/reporting for the AI usage telemetry system
+  (ADR-001 through ADR-005). Single domain by design — ADR-001 chose a
+  modular monolith over microservices, so all internal modules share one
+  Postgres instance and must not be split into separate bounded contexts.
+owner_team: platform-devex-team   # placeholder — replace with actual team name
+status: draft
+
+api_contracts:
+  - id: submit-event
+    summary: >
+      Local agent submits a signed usage event. developer_id and account_class
+      are NEVER accepted from the request body — both are derived server-side
+      (developer_id from JWT signature per ADR-003, account_class from domain
+      classification per ADR-004). auth uses a self-issued JWT signed with the
+      local agent's private key (ES256), verified against the public key
+      registered for that developer — not a bearer token from an external IdP.
+    protocol: REST
+    method: POST
+    path: /v1/events
+    auth: jwt
+    idempotent: true
+    input_schema:
+      type: object
+      required: [event_id, tool, model, provider, tokens_input, tokens_output, session_id, timestamp, status]
+      properties:
+        event_id: { type: string, format: uuid, description: "Client-generated, used for dedup" }
+        tool: { type: string, enum: [claude_code, codex, opencode, other] }
+        tool_version: { type: string }
+        model: { type: string }
+        provider: { type: string, enum: [anthropic, openai, other] }
+        tokens_input: { type: integer, minimum: 0 }
+        tokens_output: { type: integer, minimum: 0 }
+        tokens_cached: { type: integer, minimum: 0, default: 0 }
+        cost_estimate_usd: { type: number, minimum: 0 }
+        session_id: { type: string, format: uuid }
+        project: { type: string, description: "Hashed or allow-listed repo name, never a full path" }
+        machine_id: { type: string, description: "Hashed machine identifier" }
+        timestamp: { type: string, format: date-time }
+        latency_ms: { type: integer, minimum: 0 }
+        status: { type: string, enum: [success, error, timeout] }
+        account_email_domain:
+          type: string
+          description: "Secondary signal from CLI-native account (ADR-003/ADR-004), never authoritative for identity"
+    output_schema:
+      type: object
+      required: [event_id, status]
+      properties:
+        event_id: { type: string, format: uuid }
+        status: { type: string, enum: [accepted, rejected] }
+    error_codes:
+      - code: 401
+        description: Signature verification failed or key not registered
+      - code: 422
+        description: Schema validation error
+      - code: 429
+        description: Rate limit exceeded for this developer
+
+  - id: get-usage-summary
+    summary: >
+      Query aggregated usage. Result set is scoped server-side by role
+      (developer sees self only, manager sees team, platform_admin sees all)
+      — enforced by both application-layer RBAC and Postgres RLS (ADR-005).
+    protocol: REST
+    method: GET
+    path: /v1/usage/summary
+    auth: jwt
+    idempotent: true
+    input_schema:
+      type: object
+      required: [date_from, date_to]
+      properties:
+        developer_id: { type: string, format: uuid, description: "Ignored unless caller has manager/admin role" }
+        team_id: { type: string }
+        date_from: { type: string, format: date }
+        date_to: { type: string, format: date }
+        group_by: { type: string, enum: [tool, model, developer, day] }
+    output_schema:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            required: [group_key, tokens_input, tokens_output, cost_estimate_usd, call_count]
+            properties:
+              group_key: { type: string }
+              tokens_input: { type: integer }
+              tokens_output: { type: integer }
+              cost_estimate_usd: { type: number }
+              call_count: { type: integer }
+    error_codes:
+      - code: 403
+        description: Requested scope exceeds caller's role
+
+  - id: update-governance-policy
+    summary: >
+      Update Governance config (ADR-004). Requires platform_admin role,
+      checked at application layer (auth: jwt only proves identity, not
+      authorization level). Every change is written to a separate audit log
+      retained longer than raw_retention_days.
+    protocol: REST
+    method: PATCH
+    path: /v1/governance/policy
+    auth: jwt
+    idempotent: true
+    input_schema:
+      type: object
+      properties:
+        company_domains:
+          type: array
+          items: { type: string }
+        personal_account_policy: { type: string, enum: [flag_only, collect_full] }
+        raw_retention_days: { type: integer, minimum: 1, maximum: 365 }
+    output_schema:
+      type: object
+      required: [updated_at, updated_by]
+      properties:
+        updated_at: { type: string, format: date-time }
+        updated_by: { type: string, format: uuid }
+        company_domains: { type: array, items: { type: string } }
+        personal_account_policy: { type: string, enum: [flag_only, collect_full] }
+        raw_retention_days: { type: integer }
+    error_codes:
+      - code: 403
+        description: Caller does not have platform_admin role
+
+  - id: get-audit-log
+    summary: Retrieve governance change history. Available to platform_admin and auditor roles.
+    protocol: REST
+    method: GET
+    path: /v1/governance/audit-log
+    auth: jwt
+    idempotent: true
+    input_schema:
+      type: object
+      properties:
+        date_from: { type: string, format: date }
+        date_to: { type: string, format: date }
+    output_schema:
+      type: object
+      required: [entries]
+      properties:
+        entries:
+          type: array
+          items:
+            type: object
+            required: [actor, action, occurred_at]
+            properties:
+              actor: { type: string, format: uuid }
+              action: { type: string }
+              occurred_at: { type: string, format: date-time }
+              before: { type: object }
+              after: { type: object }
+
+data_ownership:
+  - entity: UsageEvent
+    description: Raw usage event, partitioned by month (ADR-002)
+    storage: postgres
+    pii: true
+    retention_policy: "Configurable via Governance, default 90 days (ADR-002)"
+  - entity: UsageDailyRollup
+    description: Daily aggregate per developer/tool/model, retained indefinitely
+    storage: postgres
+    pii: true
+    retention_policy: indefinite
+  - entity: DeveloperIdentity
+    description: developer_id to public-key and IdP-account mapping (ADR-003)
+    storage: postgres
+    pii: true
+    retention_policy: "Duration of employment + 1 year (assumption — confirm with legal/HR)"
+  - entity: GovernanceConfig
+    description: company_domains, personal_account_policy, raw_retention_days (ADR-004)
+    storage: postgres
+    pii: false
+    retention_policy: indefinite, versioned
+  - entity: TeamMembership
+    description: Manager-to-report mapping synced from IdP/HRIS (ADR-005)
+    storage: postgres
+    pii: true
+    retention_policy: "Continuously synced; historical snapshots per compliance policy"
+  - entity: GovernanceAuditLog
+    description: Change history for Governance config (ADR-005)
+    storage: postgres
+    pii: true
+    retention_policy: "Minimum 1 year, independent of raw_retention_days (assumption — confirm with compliance)"
+
+sla:
+  latency_p99_ms: 300
+  latency_p50_ms: 60
+  availability_pct: 99.5
+  throughput_rps: 50
+  consistency_model: eventual
+  rpo_minutes: 15
+  rto_minutes: 60
+
+implementation:
+  stack: rust
+  language_version: "1.80"
+  framework: axum
+  database:
+    type: postgres
+    version: "16"
+  message_broker:
+    type: none   # schema enum doesn't include NATS; actual internal broker is NATS JetStream (see architecture.md ADR-001) — devops-engineer should provision NATS, not treat this as "no broker"
+    version: "2.10"
+  skill: rust-backend-engineer
+  build_priority: 1
+  deploy_target: k8s

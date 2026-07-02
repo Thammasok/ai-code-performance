@@ -1,0 +1,57 @@
+# ─────────────────────────────────────────────
+# DOMAIN CONTRACT
+# Schema version: 1.0
+# ─────────────────────────────────────────────
+
+schema_version: "1.0"
+domain: local-agent
+version: 1.0.0
+description: >
+  Client-side daemon and thin npm package (@mycompany/ai-usage-hook) that
+  receives hook calls from AI CLI tools, resolves identity via a local
+  private key, signs events, and submits them to ai-usage-backend
+  (ADR-003). Not a service — runs on each developer's own machine.
+owner_team: platform-devex-team   # placeholder — replace with actual team name
+status: draft
+
+api_contracts: []   # exposes no API of its own — hooks call it via local socket, not a network contract
+
+depends_on:
+  - domain: ai-usage-backend
+    contract_id: submit-event
+    reason: Forward signed usage events for ingestion
+    call_pattern: sync
+    circuit_breaker: true
+    fallback: "Buffer event in local encrypted store and retry with exponential backoff; never block the CLI hook"
+
+data_ownership:
+  - entity: LocalEventBuffer
+    description: >
+      Encrypted on-disk queue of signed-but-undelivered events, used when
+      ai-usage-backend is unreachable (offline/outage). Signed at creation
+      time per ADR-003, so tampering after signing is detectable.
+    storage: other   # local disk, OS keychain-backed encryption key
+    pii: false
+    retention_policy: "Ephemeral — deleted immediately on delivery confirmation; retried until then"
+
+sla:
+  latency_p99_ms: 50
+  latency_p50_ms: 10
+  availability_pct: 99.0
+  consistency_model: eventual
+  rpo_minutes: 5
+  rto_minutes: 15
+
+implementation:
+  stack: node
+  language_version: "20"
+  framework: none   # thin daemon, no web framework — raw IPC socket server
+  database:
+    type: other   # local encrypted file, not a managed database
+    version: "n/a"
+  message_broker:
+    type: none
+    version: "n/a"
+  skill: node-backend-engineer   # NOT installed in this environment — flagged in build-order.yaml
+  build_priority: 2
+  deploy_target: other   # distributed via private npm registry + OS package manager, not a cluster deploy
