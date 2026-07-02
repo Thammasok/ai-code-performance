@@ -1,0 +1,25 @@
+{
+  "name": "@mycompany/ai-usage-hook",
+  "version": "1.0.0",
+  "description": "Thin hook client that forwards AI CLI usage events to the local ai-usage-agent daemon. See DESIGN.md.",
+  "publishConfig": {
+    "registry": "https://npm.internal.mycompany.com"
+  },
+  "bin": {
+    "ai-usage-hook": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test dist/**/*.test.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^20.0.0"
+  }
+}
