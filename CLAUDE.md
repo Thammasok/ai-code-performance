@@ -29,9 +29,10 @@
 |---|---|---|
 | `@mycompany/ai-usage-hook` (thin package) | `packages/ai-usage-hook/` | ✅ **Compile ผ่าน + ทดสอบ end-to-end แล้ว** (exit code 0 เสมอ, fallback file ทำงานถูกต้อง, adapter ทำงานถูกต้อง) |
 | `@mycompany/ai-usage-agent` (daemon) | `agents/ai-usage-agent/` | ✅ **โค้ดครบ + Compile ผ่าน** — ดู `SETUP.md` สำหรับวิธีใช้งาน |
-| `ai-usage-backend` (Rust/Axum) | `backend/ai-usage-backend/` | ✅ **โค้ดครบ + Docker Compose พร้อมใช้** — hexagonal architecture (`domain/`, `adapters/`, `infrastructure/`), integration tests ครบ, รอ build บนเครื่องที่มี Rust toolchain + Docker |
-| Liquibase Migrations | `backend/ai-usage-backend/liquibase/` | ✅ **Changelog ครบ 4 changesets** — `developers`, `governance_config`, `usage_events`, `governance_audit_log` |
+| `ai-usage-backend` (Rust/Axum) | `backend/ai-usage-backend/` | ✅ **โค้ดครบ + Tier 2 endpoints** — hexagonal architecture, 5 endpoints (health, events, summary, governance policy, audit log), รอ build บนเครื่องที่มี Rust toolchain |
+| Liquibase Migrations | `backend/ai-usage-backend/liquibase/` | ✅ **Changelog ครบ 5 changesets** — `developers`, `governance_config`, `usage_events`, `governance_audit_log`, `developer_role` |
 | Docker Compose | `backend/ai-usage-backend/docker-compose.yml` | ✅ **พร้อมใช้** — PostgreSQL 16 + Liquibase + Backend container |
+| `ai-usage-dashboard` (Next.js) | `dashboard/` | ⏳ **ยังไม่เริ่ม** — รอ backend ทดสอบเสร็จ |
 
 ### โครงสร้าง ai-usage-agent
 
@@ -47,6 +48,32 @@ agents/ai-usage-agent/src/
 └── identity/
     ├── keystore.ts       # ES256 key pair + AES buffer key generation
     └── provisioning.ts   # Developer identity provisioning (SSO stub)
+```
+
+### โครงสร้าง ai-usage-backend
+
+```
+backend/ai-usage-backend/src/
+├── main.rs                       # Entry point
+├── lib.rs                        # Module exports
+├── domain/
+│   ├── mod.rs
+│   ├── model.rs                  # UsageEvent, GovernanceConfig, Role, UsageSummary*, AuditLog*
+│   ├── auth.rs                   # JWT verification (ES256), two-step flow
+│   └── ports.rs                  # Repository traits (EventRepo, DeveloperRepo, GovernanceRepo, UsageSummaryRepo)
+├── adapters/
+│   ├── mod.rs
+│   ├── db/
+│   │   ├── mod.rs
+│   │   └── repository.rs         # Postgres implementations of all repos
+│   └── http/
+│       ├── mod.rs
+│       ├── error.rs              # AppError → HTTP response mapping
+│       ├── events.rs             # POST /v1/events, GET /health
+│       ├── summary.rs            # GET /v1/usage/summary
+│       └── governance.rs         # PATCH /v1/governance/policy, GET /v1/governance/audit-log
+└── infrastructure/
+    └── mod.rs                    # AppState, Router setup
 ```
 
 ## วิธีรัน Backend ด้วย Docker Compose
