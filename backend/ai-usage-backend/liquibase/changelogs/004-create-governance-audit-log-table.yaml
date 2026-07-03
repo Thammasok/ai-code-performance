@@ -1,0 +1,48 @@
+databaseChangeLog:
+  - changeSet:
+      id: 004-create-governance-audit-log-table
+      author: platform-devex-team
+      comment: "Create governance_audit_log table (ADR-005)"
+      changes:
+        - createTable:
+            tableName: governance_audit_log
+            columns:
+              - column:
+                  name: id
+                  type: bigint
+                  autoIncrement: true
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: actor_id
+                  type: uuid
+                  constraints:
+                    nullable: false
+              - column:
+                  name: action
+                  type: varchar(100)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: occurred_at
+                  type: timestamptz
+                  defaultValueComputed: NOW()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: before_state
+                  type: jsonb
+              - column:
+                  name: after_state
+                  type: jsonb
+        - createIndex:
+            indexName: idx_governance_audit_log_occurred_at
+            tableName: governance_audit_log
+            columns:
+              - column:
+                  name: occurred_at
+                  descending: true
+      rollback:
+        - dropTable:
+            tableName: governance_audit_log

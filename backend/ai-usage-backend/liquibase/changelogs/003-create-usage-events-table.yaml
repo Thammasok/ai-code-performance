@@ -1,0 +1,150 @@
+databaseChangeLog:
+  - changeSet:
+      id: 003-create-usage-events-table
+      author: platform-devex-team
+      comment: "Create usage_events table (ADR-002)"
+      changes:
+        - createTable:
+            tableName: usage_events
+            columns:
+              - column:
+                  name: event_id
+                  type: uuid
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: developer_id
+                  type: uuid
+                  constraints:
+                    nullable: false
+                    foreignKeyName: fk_usage_events_developer
+                    references: developers(developer_id)
+              - column:
+                  name: tool
+                  type: varchar(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: tool_version
+                  type: varchar(50)
+              - column:
+                  name: model
+                  type: varchar(100)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: provider
+                  type: varchar(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: tokens_input
+                  type: bigint
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+              - column:
+                  name: tokens_output
+                  type: bigint
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+              - column:
+                  name: tokens_cached
+                  type: bigint
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+              - column:
+                  name: cost_estimate_usd
+                  type: double
+              - column:
+                  name: session_id
+                  type: uuid
+                  constraints:
+                    nullable: false
+              - column:
+                  name: project
+                  type: varchar(255)
+              - column:
+                  name: machine_id
+                  type: varchar(255)
+              - column:
+                  name: timestamp
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: latency_ms
+                  type: int
+              - column:
+                  name: status
+                  type: varchar(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: account_email_domain
+                  type: varchar(255)
+              - column:
+                  name: account_class
+                  type: varchar(20)
+                  defaultValue: "unknown"
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: timestamptz
+                  defaultValueComputed: NOW()
+                  constraints:
+                    nullable: false
+      rollback:
+        - dropTable:
+            tableName: usage_events
+
+  - changeSet:
+      id: 003-create-usage-events-indexes
+      author: platform-devex-team
+      comment: "Create indexes for usage_events table"
+      changes:
+        - createIndex:
+            indexName: idx_usage_events_developer_timestamp
+            tableName: usage_events
+            columns:
+              - column:
+                  name: developer_id
+              - column:
+                  name: timestamp
+                  descending: true
+        - createIndex:
+            indexName: idx_usage_events_timestamp
+            tableName: usage_events
+            columns:
+              - column:
+                  name: timestamp
+                  descending: true
+        - createIndex:
+            indexName: idx_usage_events_tool
+            tableName: usage_events
+            columns:
+              - column:
+                  name: tool
+        - createIndex:
+            indexName: idx_usage_events_session
+            tableName: usage_events
+            columns:
+              - column:
+                  name: session_id
+      rollback:
+        - dropIndex:
+            indexName: idx_usage_events_developer_timestamp
+            tableName: usage_events
+        - dropIndex:
+            indexName: idx_usage_events_timestamp
+            tableName: usage_events
+        - dropIndex:
+            indexName: idx_usage_events_tool
+            tableName: usage_events
+        - dropIndex:
+            indexName: idx_usage_events_session
+            tableName: usage_events

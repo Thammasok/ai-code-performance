@@ -1,0 +1,67 @@
+databaseChangeLog:
+  - changeSet:
+      id: 002-create-governance-config-table
+      author: platform-devex-team
+      comment: "Create governance_config table (ADR-004)"
+      changes:
+        - createTable:
+            tableName: governance_config
+            columns:
+              - column:
+                  name: id
+                  type: int
+                  defaultValueNumeric: 1
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: company_domains
+                  type: text[]
+                  defaultValue: "{}"
+                  constraints:
+                    nullable: false
+              - column:
+                  name: personal_account_policy
+                  type: varchar(20)
+                  defaultValue: "flag_only"
+                  constraints:
+                    nullable: false
+              - column:
+                  name: raw_retention_days
+                  type: int
+                  defaultValueNumeric: 90
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: timestamptz
+                  defaultValueComputed: NOW()
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: timestamptz
+                  defaultValueComputed: NOW()
+                  constraints:
+                    nullable: false
+        - sql:
+            sql: "ALTER TABLE governance_config ADD CONSTRAINT single_row CHECK (id = 1)"
+      rollback:
+        - dropTable:
+            tableName: governance_config
+
+  - changeSet:
+      id: 002-insert-default-governance-config
+      author: platform-devex-team
+      comment: "Insert default governance config row"
+      changes:
+        - insert:
+            tableName: governance_config
+            columns:
+              - column:
+                  name: id
+                  valueNumeric: 1
+      rollback:
+        - delete:
+            tableName: governance_config
+            where: id = 1

@@ -1,0 +1,11 @@
+target/
+.git/
+.gitignore
+*.md
+.env
+.env.*
+docker-compose*.yml
+Dockerfile
+liquibase/
+migrations/
+tests/
