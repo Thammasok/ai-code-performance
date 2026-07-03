@@ -18,7 +18,6 @@ use crate::domain::model::{
     AuditLogQuery, AuditLogResponse, GovernanceConfig, GovernancePolicyResponse,
     GovernancePolicyUpdate, Role,
 };
-use crate::domain::ports::{DeveloperRepositoryExt, GovernanceRepository};
 use crate::infrastructure::AppState;
 
 use super::error::AppError;

@@ -27,6 +27,7 @@ services:
     volumes:
       - ./liquibase:/liquibase/changelog
     command: >
+      --search-path=/liquibase/changelog
       --changelog-file=db.changelog-master.yaml
       --url=jdbc:postgresql://postgres:5432/aiusage
       --username=aiusage

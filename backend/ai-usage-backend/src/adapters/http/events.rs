@@ -10,14 +10,11 @@ use axum::{
     http::HeaderMap,
     Json,
 };
-use uuid::Uuid;
-
-use crate::domain::auth::{authenticate, AuthError};
+use crate::domain::auth::authenticate;
 use crate::domain::model::{
     classify_account, should_redact, EventResponse, EventResponseStatus,
     UsageEvent, UsageEventInput,
 };
-use crate::domain::ports::{DeveloperRepository, EventRepository, GovernanceRepository};
 use crate::infrastructure::AppState;
 
 use super::error::AppError;

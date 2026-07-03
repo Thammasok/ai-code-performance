@@ -15,7 +15,6 @@ use axum::{
 
 use crate::domain::auth::authenticate;
 use crate::domain::model::{Role, UsageSummaryQuery, UsageSummaryResponse};
-use crate::domain::ports::{DeveloperRepositoryExt, UsageSummaryRepository};
 use crate::infrastructure::AppState;
 
 use super::error::AppError;

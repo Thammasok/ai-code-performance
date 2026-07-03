@@ -171,7 +171,7 @@ impl GovernanceRepository for PgGovernanceRepository {
 
         match row {
             Some(r) => Ok(GovernanceConfig {
-                company_domains: r.company_domains.unwrap_or_default(),
+                company_domains: r.company_domains,
                 personal_account_policy: str_to_personal_account_policy(&r.personal_account_policy),
                 raw_retention_days: r.raw_retention_days,
             }),
