@@ -234,6 +234,123 @@ pub enum EventResponseStatus {
     Rejected,
 }
 
+// ============================================================================
+// Tier 2 Models: Usage Summary, Governance, Audit Log
+// ============================================================================
+
+/// User role for RBAC (ADR-005).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
+    Developer,
+    Manager,
+    PlatformAdmin,
+    Auditor,
+}
+
+impl Default for Role {
+    fn default() -> Self {
+        Self::Developer
+    }
+}
+
+/// Developer identity with role information.
+#[derive(Debug, Clone)]
+pub struct Developer {
+    pub developer_id: Uuid,
+    pub email: Option<String>,
+    pub display_name: Option<String>,
+    pub role: Role,
+    pub team_id: Option<String>,
+}
+
+/// Query parameters for GET /v1/usage/summary.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UsageSummaryQuery {
+    pub date_from: chrono::NaiveDate,
+    pub date_to: chrono::NaiveDate,
+    #[serde(default)]
+    pub developer_id: Option<Uuid>,
+    #[serde(default)]
+    pub team_id: Option<String>,
+    #[serde(default)]
+    pub group_by: Option<GroupBy>,
+}
+
+/// Grouping options for usage summary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupBy {
+    Tool,
+    Model,
+    Developer,
+    Day,
+}
+
+/// Single row in usage summary results.
+#[derive(Debug, Clone, Serialize)]
+pub struct UsageSummaryRow {
+    pub group_key: String,
+    pub tokens_input: i64,
+    pub tokens_output: i64,
+    pub cost_estimate_usd: f64,
+    pub call_count: i64,
+}
+
+/// Response for GET /v1/usage/summary.
+#[derive(Debug, Clone, Serialize)]
+pub struct UsageSummaryResponse {
+    pub results: Vec<UsageSummaryRow>,
+}
+
+/// Input for PATCH /v1/governance/policy.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GovernancePolicyUpdate {
+    #[serde(default)]
+    pub company_domains: Option<Vec<String>>,
+    #[serde(default)]
+    pub personal_account_policy: Option<PersonalAccountPolicy>,
+    #[serde(default)]
+    pub raw_retention_days: Option<i32>,
+}
+
+/// Response for PATCH /v1/governance/policy.
+#[derive(Debug, Clone, Serialize)]
+pub struct GovernancePolicyResponse {
+    pub updated_at: DateTime<Utc>,
+    pub updated_by: Uuid,
+    pub company_domains: Vec<String>,
+    pub personal_account_policy: PersonalAccountPolicy,
+    pub raw_retention_days: i32,
+}
+
+/// Query parameters for GET /v1/governance/audit-log.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AuditLogQuery {
+    #[serde(default)]
+    pub date_from: Option<chrono::NaiveDate>,
+    #[serde(default)]
+    pub date_to: Option<chrono::NaiveDate>,
+}
+
+/// Single entry in the audit log.
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditLogEntry {
+    pub actor: Uuid,
+    pub action: String,
+    pub occurred_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<serde_json::Value>,
+}
+
+/// Response for GET /v1/governance/audit-log.
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditLogResponse {
+    pub entries: Vec<AuditLogEntry>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

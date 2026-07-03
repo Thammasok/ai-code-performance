@@ -5,14 +5,19 @@
 //!   BEFORE writing to DB, not at query time (data minimization).
 
 use async_trait::async_trait;
+use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::domain::auth::AuthError;
 use crate::domain::model::{
-    AccountClass, CallStatus, GovernanceConfig, PersonalAccountPolicy, Provider, Tool, UsageEvent,
+    AccountClass, AuditLogEntry, CallStatus, Developer, GovernanceConfig, GroupBy,
+    PersonalAccountPolicy, Provider, Role, Tool, UsageEvent, UsageSummaryRow,
 };
-use crate::domain::ports::{DeveloperRepository, EventRepository, GovernanceRepository, RepositoryError};
+use crate::domain::ports::{
+    DeveloperRepository, DeveloperRepositoryExt, EventRepository, GovernanceRepository,
+    RepositoryError, UsageSummaryRepository,
+};
 
 /// PostgreSQL implementation of EventRepository.
 #[derive(Clone)]
@@ -174,26 +179,229 @@ impl GovernanceRepository for PgGovernanceRepository {
         }
     }
 
-    async fn update_config(&self, config: &GovernanceConfig) -> Result<(), RepositoryError> {
-        sqlx::query!(
+    async fn update_config(
+        &self,
+        config: &GovernanceConfig,
+        actor_id: Uuid,
+        before: &GovernanceConfig,
+    ) -> Result<DateTime<Utc>, RepositoryError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+        // Update config
+        let updated_at: DateTime<Utc> = sqlx::query_scalar!(
             r#"
-            INSERT INTO governance_config (id, company_domains, personal_account_policy, raw_retention_days)
-            VALUES (1, $1, $2, $3)
+            INSERT INTO governance_config (id, company_domains, personal_account_policy, raw_retention_days, updated_at)
+            VALUES (1, $1, $2, $3, NOW())
             ON CONFLICT (id) DO UPDATE SET
                 company_domains = EXCLUDED.company_domains,
                 personal_account_policy = EXCLUDED.personal_account_policy,
                 raw_retention_days = EXCLUDED.raw_retention_days,
                 updated_at = NOW()
+            RETURNING updated_at
             "#,
             &config.company_domains,
             personal_account_policy_to_str(config.personal_account_policy),
             config.raw_retention_days,
         )
-        .execute(&self.pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(|e| RepositoryError::Database(e.to_string()))?;
 
-        Ok(())
+        // Log the change to audit log
+        let before_json = serde_json::json!({
+            "company_domains": before.company_domains,
+            "personal_account_policy": personal_account_policy_to_str(before.personal_account_policy),
+            "raw_retention_days": before.raw_retention_days,
+        });
+        let after_json = serde_json::json!({
+            "company_domains": config.company_domains,
+            "personal_account_policy": personal_account_policy_to_str(config.personal_account_policy),
+            "raw_retention_days": config.raw_retention_days,
+        });
+
+        sqlx::query!(
+            r#"
+            INSERT INTO governance_audit_log (actor_id, action, before_state, after_state)
+            VALUES ($1, 'update_governance_policy', $2, $3)
+            "#,
+            actor_id,
+            before_json,
+            after_json,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+        Ok(updated_at)
+    }
+
+    async fn get_audit_log(
+        &self,
+        date_from: Option<NaiveDate>,
+        date_to: Option<NaiveDate>,
+    ) -> Result<Vec<AuditLogEntry>, RepositoryError> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT
+                actor_id,
+                action,
+                occurred_at,
+                before_state,
+                after_state
+            FROM governance_audit_log
+            WHERE ($1::date IS NULL OR occurred_at >= $1::date)
+              AND ($2::date IS NULL OR occurred_at < ($2::date + interval '1 day'))
+            ORDER BY occurred_at DESC
+            LIMIT 1000
+            "#,
+            date_from,
+            date_to,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| AuditLogEntry {
+                actor: r.actor_id,
+                action: r.action,
+                occurred_at: r.occurred_at,
+                before: r.before_state,
+                after: r.after_state,
+            })
+            .collect())
+    }
+}
+
+// ============================================================================
+// UsageSummaryRepository Implementation
+// ============================================================================
+
+/// PostgreSQL implementation of UsageSummaryRepository.
+#[derive(Clone)]
+pub struct PgUsageSummaryRepository {
+    pool: PgPool,
+}
+
+impl PgUsageSummaryRepository {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl UsageSummaryRepository for PgUsageSummaryRepository {
+    async fn query_summary(
+        &self,
+        developer_ids: Option<Vec<Uuid>>,
+        date_from: NaiveDate,
+        date_to: NaiveDate,
+        group_by: Option<GroupBy>,
+    ) -> Result<Vec<UsageSummaryRow>, RepositoryError> {
+        // Build dynamic query based on group_by
+        let group_column = match group_by {
+            Some(GroupBy::Tool) => "tool",
+            Some(GroupBy::Model) => "model",
+            Some(GroupBy::Developer) => "developer_id::text",
+            Some(GroupBy::Day) => "DATE(timestamp)::text",
+            None => "'all'", // No grouping, aggregate all
+        };
+
+        // Use dynamic SQL since group_by changes the query structure
+        let query = format!(
+            r#"
+            SELECT
+                {} as group_key,
+                COALESCE(SUM(tokens_input), 0) as tokens_input,
+                COALESCE(SUM(tokens_output), 0) as tokens_output,
+                COALESCE(SUM(cost_estimate_usd), 0.0) as cost_estimate_usd,
+                COUNT(*) as call_count
+            FROM usage_events
+            WHERE timestamp >= $1::date
+              AND timestamp < ($2::date + interval '1 day')
+              AND ($3::uuid[] IS NULL OR developer_id = ANY($3))
+            GROUP BY {}
+            ORDER BY call_count DESC
+            LIMIT 1000
+            "#,
+            group_column, group_column
+        );
+
+        let developer_ids_arr: Option<Vec<Uuid>> = developer_ids;
+
+        let rows = sqlx::query_as::<_, (String, i64, i64, f64, i64)>(&query)
+            .bind(date_from)
+            .bind(date_to)
+            .bind(&developer_ids_arr)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(group_key, tokens_input, tokens_output, cost_estimate_usd, call_count)| {
+                UsageSummaryRow {
+                    group_key,
+                    tokens_input,
+                    tokens_output,
+                    cost_estimate_usd,
+                    call_count,
+                }
+            })
+            .collect())
+    }
+
+    async fn get_team_developer_ids(&self, team_id: &str) -> Result<Vec<Uuid>, RepositoryError> {
+        let rows = sqlx::query_scalar!(
+            r#"SELECT developer_id FROM developers WHERE team_id = $1"#,
+            team_id
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+        Ok(rows)
+    }
+}
+
+// ============================================================================
+// DeveloperRepositoryExt Implementation
+// ============================================================================
+
+#[async_trait]
+impl DeveloperRepositoryExt for PgDeveloperRepository {
+    async fn get_developer(&self, developer_id: Uuid) -> Result<Developer, RepositoryError> {
+        let row = sqlx::query!(
+            r#"
+            SELECT developer_id, email, display_name, role, team_id
+            FROM developers
+            WHERE developer_id = $1
+            "#,
+            developer_id
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+        match row {
+            Some(r) => Ok(Developer {
+                developer_id: r.developer_id,
+                email: r.email,
+                display_name: r.display_name,
+                role: str_to_role(&r.role),
+                team_id: r.team_id,
+            }),
+            None => Err(RepositoryError::NotFound),
+        }
     }
 }
 
@@ -243,5 +451,14 @@ fn str_to_personal_account_policy(s: &str) -> PersonalAccountPolicy {
     match s {
         "collect_full" => PersonalAccountPolicy::CollectFull,
         _ => PersonalAccountPolicy::FlagOnly, // default to restrictive
+    }
+}
+
+fn str_to_role(s: &str) -> Role {
+    match s {
+        "manager" => Role::Manager,
+        "platform_admin" => Role::PlatformAdmin,
+        "auditor" => Role::Auditor,
+        _ => Role::Developer, // default to least privilege
     }
 }

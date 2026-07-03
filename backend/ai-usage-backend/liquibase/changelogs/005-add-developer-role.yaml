@@ -1,0 +1,29 @@
+databaseChangeLog:
+  - changeSet:
+      id: 005-add-developer-role
+      author: platform-devex-team
+      comment: "Add role column to developers table for RBAC (ADR-005)"
+      changes:
+        - addColumn:
+            tableName: developers
+            columns:
+              - column:
+                  name: role
+                  type: varchar(50)
+                  defaultValue: "developer"
+                  constraints:
+                    nullable: false
+        - addColumn:
+            tableName: developers
+            columns:
+              - column:
+                  name: team_id
+                  type: varchar(100)
+                  remarks: "Team identifier for manager role scoping"
+      rollback:
+        - dropColumn:
+            tableName: developers
+            columnName: role
+        - dropColumn:
+            tableName: developers
+            columnName: team_id

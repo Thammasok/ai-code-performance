@@ -28,10 +28,26 @@
 | ส่วน | Path | สถานะ |
 |---|---|---|
 | `@mycompany/ai-usage-hook` (thin package) | `packages/ai-usage-hook/` | ✅ **Compile ผ่าน + ทดสอบ end-to-end แล้ว** (exit code 0 เสมอ, fallback file ทำงานถูกต้อง, adapter ทำงานถูกต้อง) |
-| `@mycompany/ai-usage-agent` (daemon) | `agents/ai-usage-agent/` | ✅ **Compile ผ่าน + ทดสอบ end-to-end แล้ว** กับ mock backend (JWT signing/verify, hash-chain tamper detection, offline fallback sweep ทดสอบจริงหมดแล้ว) |
+| `@mycompany/ai-usage-agent` (daemon) | `agents/ai-usage-agent/` | ✅ **โค้ดครบ + Compile ผ่าน** — ดู `SETUP.md` สำหรับวิธีใช้งาน |
 | `ai-usage-backend` (Rust/Axum) | `backend/ai-usage-backend/` | ✅ **โค้ดครบ + Docker Compose พร้อมใช้** — hexagonal architecture (`domain/`, `adapters/`, `infrastructure/`), integration tests ครบ, รอ build บนเครื่องที่มี Rust toolchain + Docker |
 | Liquibase Migrations | `backend/ai-usage-backend/liquibase/` | ✅ **Changelog ครบ 4 changesets** — `developers`, `governance_config`, `usage_events`, `governance_audit_log` |
 | Docker Compose | `backend/ai-usage-backend/docker-compose.yml` | ✅ **พร้อมใช้** — PostgreSQL 16 + Liquibase + Backend container |
+
+### โครงสร้าง ai-usage-agent
+
+```
+agents/ai-usage-agent/src/
+├── index.ts              # Main entry point, orchestrates all modules
+├── types.ts              # RawHookMessage, EnrichedEvent, BufferRecord
+├── enrich.ts             # Transform RawHookMessage → EnrichedEvent, ES256 signing
+├── ipc-server.ts         # Unix socket/named pipe server for hook IPC
+├── uploader.ts           # HTTP POST with JWT auth, exponential backoff
+├── buffer/
+│   └── buffer-store.ts   # AES-256-GCM encrypted buffer with hash-chain
+└── identity/
+    ├── keystore.ts       # ES256 key pair + AES buffer key generation
+    └── provisioning.ts   # Developer identity provisioning (SSO stub)
+```
 
 ## วิธีรัน Backend ด้วย Docker Compose
 
@@ -57,6 +73,9 @@ docker compose --profile app up -d backend
 |--------|------|-------------|
 | GET | `/health` | Health check |
 | POST | `/v1/events` | Submit usage event (requires JWT) |
+| GET | `/v1/usage/summary` | Query aggregated usage (requires JWT, scoped by role) |
+| PATCH | `/v1/governance/policy` | Update governance config (requires platform_admin) |
+| GET | `/v1/governance/audit-log` | Retrieve change history (requires platform_admin/auditor) |
 
 ## งานที่ต้องทำต่อ (ลำดับความสำคัญ)
 
@@ -89,32 +108,74 @@ Integration tests อยู่ใน `tests/integration_test.rs` ครอบค
 cargo test
 ```
 
-### 3. ต่อ `ai-usage-agent` (daemon) เข้ากับ backend จริง
+### ✅ 3. ~~ต่อ `ai-usage-agent` (daemon) เข้ากับ backend จริง~~ (เสร็จแล้ว)
 
-Daemon ทดสอบผ่านมาแล้วกับ mock backend (ดู `docs/packages/ai-usage-agent-design.md`) — พอ backend จริงรันได้ ให้:
+โค้ดครบแล้ว พร้อมทดสอบกับ backend จริง — ดู `agents/ai-usage-agent/SETUP.md` สำหรับขั้นตอนเต็ม
+
+**Quick start:**
 ```bash
+# 1. Start agent (จะ auto-generate keys ถ้ายังไม่มี)
+cd agents/ai-usage-agent
+npm install && npm run build
 export AI_USAGE_BACKEND_URL=http://localhost:8080/v1/events
-export AI_USAGE_DEV_DEVELOPER_ID=<uuid>   # ใช้ได้ชั่วคราวจนกว่าจะมี SSO integration จริง — ดูข้อ 4
+export AI_USAGE_DEV_DEVELOPER_ID=<uuid>
+node dist/index.js
+
+# 2. Register public key กับ backend
+cd backend/ai-usage-backend
+cargo run --bin register_developer -- <uuid> ~/.mycompany-ai-usage/keys/signing.pub
+
+# 3. Test ด้วย hook
+cd packages/ai-usage-hook
+node dist/cli.js claude_code user_prompt_submit '{"model":"claude-3","tokensInput":100}'
 ```
-แล้วรัน `register_developer` binary เพื่อลงทะเบียน public key ของ daemon ก่อนยิง event จริง:
-```bash
-cargo run --bin register_developer -- <developer_uuid> <path_to_public_key.pem>
-```
 
-### 4. Implement ส่วนที่เป็น stub ไว้โดยตั้งใจ (org-specific)
+**Modules ที่ implement แล้ว:**
+| Module | Purpose |
+|--------|---------|
+| `identity/keystore.ts` | ES256 key pair (P-256) + AES-256 buffer key, auto-generate ถ้าไม่มี |
+| `identity/provisioning.ts` | Dev mode via `AI_USAGE_DEV_DEVELOPER_ID`, SSO stub สำหรับ production |
+| `enrich.ts` | Transform `RawHookMessage` → `EnrichedEvent`, ES256 signing |
+| `buffer/buffer-store.ts` | AES-256-GCM encryption, SHA-256 hash-chain tamper detection |
+| `ipc-server.ts` | Unix socket / Windows named pipe, matches hook's IPC protocol |
+| `uploader.ts` | HTTP POST with self-signed JWT, exponential backoff (1s → 5min) |
 
-- `agents/ai-usage-agent/src/identity/provisioning.ts` → ฟังก์ชัน `registerWithCompanyIdp()` — ต้องเขียน SSO device-code flow จริงกับ IdP ของบริษัท (Okta/Azure AD/Google) ตาม ADR-003
-- Endpoint ฝั่ง backend สำหรับรับ public key registration จากผลของ SSO flow (ตอนนี้มีแค่ CLI helper สำหรับ dev/test)
-- `agents/ai-usage-agent/src/identity/keystore.ts` → `FileKeyStore` เป็น reference implementation เท่านั้น **ต้องเปลี่ยนเป็น OS keychain จริง** (keytar หรือ native binding) ก่อน deploy จริงตาม ADR-003 — เหตุผลอยู่ในคอมเมนต์ของไฟล์
+### 4. Implement ส่วนที่เป็น stub ไว้โดยตั้งใจ (org-specific, ก่อน production)
 
-### 5. Tier 2 Endpoints (ยังไม่ implement)
+| ไฟล์ | สิ่งที่ต้องทำ | เหตุผล |
+|------|-------------|--------|
+| `provisioning.ts` | Implement `registerWithCompanyIdp()` | SSO device-code flow กับ IdP ของบริษัท (Okta/Azure AD/Google) ตาม ADR-003 |
+| `keystore.ts` | เปลี่ยนจาก `FileKeyStore` เป็น OS keychain | ป้องกัน private key ถูก copy — ใช้ keytar หรือ native binding |
+| Backend | Endpoint รับ public key registration จาก SSO | ตอนนี้มีแค่ CLI helper (`register_developer`) สำหรับ dev/test |
 
-Spec ครบใน `domain-ai-usage-backend.yaml` แล้ว:
-- `GET /v1/usage/summary` — query aggregated usage
-- `PATCH /v1/governance/policy` — update governance config (admin only)
-- `GET /v1/governance/audit-log` — retrieve governance change history
+**หมายเหตุ:** โค้ดปัจจุบันใช้งานได้สำหรับ dev/test ผ่าน `AI_USAGE_DEV_DEVELOPER_ID` env var
 
-แล้วค่อยเริ่ม `ai-usage-dashboard` (Next.js)
+### ✅ 5. ~~Tier 2 Endpoints~~ (เสร็จแล้ว)
+
+โค้ดครบ รอ build บนเครื่องที่มี Rust toolchain พร้อม:
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/v1/usage/summary` | JWT | Query aggregated usage (scoped by role) |
+| PATCH | `/v1/governance/policy` | JWT + platform_admin | Update governance config |
+| GET | `/v1/governance/audit-log` | JWT + platform_admin/auditor | Retrieve change history |
+
+**ไฟล์ที่เพิ่ม:**
+- `src/adapters/http/summary.rs` — GET /v1/usage/summary handler
+- `src/adapters/http/governance.rs` — PATCH + GET governance handlers
+- `liquibase/changelogs/005-add-developer-role.yaml` — เพิ่ม `role`, `team_id` column
+
+**RBAC Roles (ADR-005):**
+| Role | Usage Summary | Governance Policy | Audit Log |
+|------|--------------|-------------------|-----------|
+| developer | own data only | ❌ | ❌ |
+| manager | team data | ❌ | ❌ |
+| platform_admin | all data | ✅ | ✅ |
+| auditor | own data only | ❌ | ✅ |
+
+### 6. `ai-usage-dashboard` (Next.js) — ยังไม่เริ่ม
+
+รอ backend ทดสอบเสร็จก่อน
 
 ## หลักการที่ต้องยึดตลอด (สรุปจาก ADR ทั้งหมด)
 

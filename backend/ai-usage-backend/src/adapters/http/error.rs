@@ -30,6 +30,7 @@ pub enum AppError {
     Auth(AuthError),
     Repository(RepositoryError),
     Validation(String),
+    Forbidden(String),
 }
 
 impl From<AuthError> for AppError {
@@ -86,6 +87,7 @@ impl IntoResponse for AppError {
                 }
             },
             AppError::Validation(msg) => (StatusCode::UNPROCESSABLE_ENTITY, "validation_error", msg),
+            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, "forbidden", msg),
         };
 
         let body = ErrorResponse {
